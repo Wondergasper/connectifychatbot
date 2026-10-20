@@ -1,0 +1,28 @@
+# WhatsApp, Supabase, Paystack, and Gemini credentials
+.env
+.env.*
+!.env.example
+
+# Python runtime and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Local logs and Redis data
+*.log
+dump.rdb
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.vscode/
+
+tests/
+
+live_setup_rpcs_and_seeds.sql
+
+scratch/
