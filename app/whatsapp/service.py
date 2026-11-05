@@ -29,9 +29,34 @@ class WhatsAppService:
             except Exception as e:
                 logger.error(f"[WhatsAppService] Listener error: {e}")
 
+    async def _send_text_menu(self, to: str, text: str, choices: List[Dict[str, str]]) -> Dict[str, Any]:
+        from app.whatsapp.session import session_manager
+
+        await session_manager.update_session(to, {"wasenderChoices": choices})
+        lines = [text, ""] + [f"{i}. {item.get('title', '')}" for i, item in enumerate(choices, 1)]
+        lines.append("Reply with the number of your choice.")
+        return await self.send_message(to, "\n".join(lines))
+
     async def send_message(self, to: str, text: str, attempt: int = 1) -> Dict[str, Any]:
         """Sends a plain text message to a user via Meta WhatsApp Cloud API."""
         self._notify_listeners(to, {"type": "text", "to": to, "text": text})
+
+        if settings.WHATSAPP_PROVIDER.lower() == "wasender":
+            if not settings.WASENDER_API_KEY:
+                logger.error("WasenderAPI key is not configured")
+                return {"error": "WasenderAPI key is not configured"}
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    response = await client.post(
+                        "https://www.wasenderapi.com/api/send-message",
+                        json={"to": to, "text": text},
+                        headers={"Authorization": f"Bearer {settings.WASENDER_API_KEY}"},
+                    )
+                response.raise_for_status()
+                return response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.error("WasenderAPI send failed: %s", exc)
+                return {"error": "WasenderAPI send failed"}
 
         if not self.token or not self.phone_id:
             logger.warning(f"[WhatsAppService] (Simulated Text) -> {to}:\n{text}")
@@ -82,6 +107,8 @@ class WhatsAppService:
         Sends an interactive button message (up to 3 buttons) via Meta WhatsApp Cloud API.
         """
         options = options or {}
+        if settings.WHATSAPP_PROVIDER.lower() == "wasender":
+            return await self._send_text_menu(to, text, buttons[:3])
         formatted_buttons = [
             {
                 "type": "reply",
@@ -185,6 +212,9 @@ class WhatsAppService:
         Sends an interactive list message (up to 10 rows across sections) via Meta WhatsApp Cloud API.
         """
         options = options or {}
+        if settings.WHATSAPP_PROVIDER.lower() == "wasender":
+            rows = [row for section in sections for row in section.get("rows", [])][:10]
+            return await self._send_text_menu(to, text, rows)
         formatted_sections = []
         for sec in sections:
             formatted_rows = []
@@ -302,6 +332,8 @@ class WhatsAppService:
         Sends a pre-approved Meta WhatsApp Message Template for re-engaging users
         outside the 24-hour customer service window.
         """
+        if settings.WHATSAPP_PROVIDER.lower() == "wasender":
+            return {"error": "Meta templates are not supported by the Wasender transport"}
         components = components or []
         self._notify_listeners(to, {
             "type": "template",

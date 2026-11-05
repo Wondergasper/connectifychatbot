@@ -65,6 +65,8 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 app.include_router(whatsapp_router, prefix="/api/whatsapp/webhook", tags=["WhatsApp"])
 # 2. Direct path: /webhook (frequently configured in Meta developer dashboard)
 app.include_router(whatsapp_router, prefix="/webhook", tags=["WhatsApp Webhook Direct"])
+from app.whatsapp.wasender_webhook import router as wasender_router
+app.include_router(wasender_router, prefix="/api/wasender/webhook", tags=["WasenderAPI"])
 
 # Mount Paystack Webhook router
 from app.payments.webhook import router as paystack_router

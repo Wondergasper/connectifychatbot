@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
 
     # Meta WhatsApp Cloud API
+    WHATSAPP_PROVIDER: str = "meta"
+    WASENDER_API_KEY: Optional[str] = None
+    WASENDER_WEBHOOK_SECRET: Optional[str] = None
     WHATSAPP_TOKEN: Optional[str] = os.getenv("WHATSAPP_TOKEN")
     WHATSAPP_PHONE_ID: Optional[str] = os.getenv("WHATSAPP_PHONE_ID")
     WHATSAPP_APP_SECRET: Optional[str] = os.getenv("WHATSAPP_APP_SECRET")
