@@ -20,7 +20,8 @@ from app.core.config import settings
 from app.whatsapp.session import session_manager, session_phone
 
 logger = logging.getLogger("connectify.wasender_queue")
-LEASE_SECONDS = 900
+LEASE_SECONDS = 60
+LEASE_HEARTBEAT_SECONDS = 15
 
 
 class WasenderQueue:
@@ -79,11 +80,23 @@ class WasenderQueue:
         now = time.time()
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            # Checking the oldest unfinished job also prevents another process
-            # overtaking a leased/retrying message (including numbered replies).
+            # Sending is serial per Wasender session. Incoming work can run for
+            # different senders, but never overtake an earlier reply by that sender.
+            if kind == "out" and db.execute(
+                "SELECT 1 FROM jobs WHERE kind='out' AND state='processing' AND available>? LIMIT 1", (now,),
+            ).fetchone():
+                return None
             row = db.execute(
-                "SELECT * FROM jobs WHERE kind=? AND state IN ('pending', 'processing') ORDER BY seq LIMIT 1",
-                (kind,),
+                """SELECT j.* FROM jobs j
+                   WHERE j.kind=? AND j.state IN ('pending', 'processing') AND j.available<=?
+                     AND NOT EXISTS (
+                       SELECT 1 FROM jobs earlier
+                       WHERE earlier.kind=j.kind AND earlier.seq<j.seq
+                         AND earlier.state IN ('pending', 'processing')
+                         AND json_extract(earlier.payload, '$.phone')=json_extract(j.payload, '$.phone')
+                     )
+                   ORDER BY j.seq LIMIT 1""",
+                (kind, now),
             ).fetchone()
             if not row or row["available"] > now:
                 return None
@@ -105,6 +118,19 @@ class WasenderQueue:
     def _pace(self, delay):
         with self._connect() as db:
             db.execute("UPDATE queue_clock SET next_send=? WHERE id=1", (time.time() + delay,))
+
+    def _renew_lease(self, job):
+        with self._connect() as db:
+            return db.execute(
+                "UPDATE jobs SET available=? WHERE id=? AND state='processing' AND attempts=?",
+                (time.time() + LEASE_SECONDS, job["id"], job["attempts"]),
+            ).rowcount
+
+    async def _heartbeat(self, job):
+        while True:
+            await asyncio.sleep(LEASE_HEARTBEAT_SECONDS)
+            if not await asyncio.to_thread(self._renew_lease, job):
+                return
 
     async def _incoming(self, payload):
         from app.whatsapp.conversation import conversation_manager
@@ -167,6 +193,7 @@ class WasenderQueue:
             delay = max(self.retry_delay(response, data), settings.WASENDER_SEND_INTERVAL_SECONDS)
             await asyncio.to_thread(self._pace, delay)
             await asyncio.to_thread(self._finish, job["id"], "pending", delay, "rate_limited")
+            logger.warning("Wasender rate limited job %s; retry in %.1f seconds", job["id"], delay)
             return
         # Configuration/account failures remain queued so reconnecting or fixing
         # credentials does not discard notifications. Never log response bodies.
@@ -192,6 +219,9 @@ class WasenderQueue:
         job = await asyncio.to_thread(self._claim, kind)
         if not job:
             return False
+        started = time.perf_counter()
+        queue_wait_ms = max(0, round((time.time() - job["updated"]) * 1000))
+        heartbeat = asyncio.create_task(self._heartbeat(job))
         try:
             if kind == "in":
                 await self._incoming(job["payload"])
@@ -207,6 +237,12 @@ class WasenderQueue:
             state = "failed" if job["attempts"] >= 8 else "pending"
             await asyncio.to_thread(self._finish, job["id"], state, delay, "processing_failed")
             logger.error("Wasender %s job %s failed; state=%s", kind, job["id"], state)
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+            logger.info("Wasender %s job %s attempt=%s queue_wait_ms=%s processing_ms=%s",
+                        kind, job["id"], job["attempts"], queue_wait_ms,
+                        round((time.perf_counter() - started) * 1000))
         return True
 
     async def _worker(self, kind):
@@ -224,10 +260,14 @@ class WasenderQueue:
         # Open before serving HTTP so a bad/unwritable queue path fails startup.
         await asyncio.to_thread(self._initialize)
         if not self.tasks:
-            self.tasks = [asyncio.create_task(self._worker(kind)) for kind in ("in", "out")]
+            self.tasks = [asyncio.create_task(self._worker("in")) for _ in range(settings.WASENDER_INBOX_WORKERS)]
+            self.tasks.append(asyncio.create_task(self._worker("out")))
 
     def _initialize(self):
         with self._connect() as db:
+            # Migrate leases left by the previous 15-minute recovery policy.
+            db.execute("UPDATE jobs SET available=MIN(available, ?) WHERE state='processing'",
+                       (time.time() + LEASE_SECONDS,))
             # Keep deduplication IDs and completed payloads for a week.
             db.execute("DELETE FROM jobs WHERE state='done' AND updated < ?", (time.time() - 7 * 86400,))
 

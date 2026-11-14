@@ -2,7 +2,7 @@ import json
 import logging
 from typing import Dict, Any, Optional
 
-from app.core.redis import get_redis_client
+from app.core.redis import get_redis_client, mark_redis_unavailable
 
 logger = logging.getLogger("connectify.session")
 
@@ -47,6 +47,7 @@ class SessionManager:
                 return fresh
             except Exception as e:
                 logger.error(f"[SessionManager] Redis GET error for {phone_number}: {e}")
+                await mark_redis_unavailable()
 
         # In-memory fallback
         if phone_number not in _memory_store:
@@ -66,6 +67,7 @@ class SessionManager:
                 return merged
             except Exception as e:
                 logger.error(f"[SessionManager] Redis SET error for {phone_number}: {e}")
+                await mark_redis_unavailable()
 
         _memory_store[phone_number] = merged
         return merged
@@ -79,6 +81,7 @@ class SessionManager:
                 await client.delete(key)
             except Exception as e:
                 logger.error(f"[SessionManager] Redis DELETE error for {phone_number}: {e}")
+                await mark_redis_unavailable()
 
         _memory_store.pop(phone_number, None)
         return True

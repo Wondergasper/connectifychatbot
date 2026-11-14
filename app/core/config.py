@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     WASENDER_QUEUE_DB: str = "data/wasender.sqlite3"
     # Safe for paid sessions with account protection; trial accounts need 60.
     WASENDER_SEND_INTERVAL_SECONDS: float = Field(default=5.0, ge=0.25)
+    WASENDER_INBOX_WORKERS: int = Field(default=4, ge=1, le=8)
     WHATSAPP_TOKEN: Optional[str] = os.getenv("WHATSAPP_TOKEN")
     WHATSAPP_PHONE_ID: Optional[str] = os.getenv("WHATSAPP_PHONE_ID")
     WHATSAPP_APP_SECRET: Optional[str] = os.getenv("WHATSAPP_APP_SECRET")

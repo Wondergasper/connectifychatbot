@@ -248,7 +248,7 @@ async def test_queue_workers_start_and_stop_without_live_network(monkeypatch):
     try:
         await wasender_queue.start()
         await asyncio.wait_for(handled.wait(), timeout=5)
-        assert len(wasender_queue.tasks) == 2
+        assert len(wasender_queue.tasks) == settings.WASENDER_INBOX_WORKERS + 1
     finally:
         await wasender_queue.stop()
     assert not wasender_queue.tasks
@@ -269,3 +269,95 @@ async def test_session_reset_clears_both_phone_spellings():
     assert (await session_manager.get_session("2348001234567"))["step"] == "PROVIDER_SELECTION"
     await session_manager.clear_session("2348001234567")
     assert (await session_manager.get_session("+2348001234567"))["step"] == "init"
+
+
+@pytest.mark.asyncio
+async def test_retrying_sender_does_not_delay_other_senders():
+    await wasender_queue.enqueue_incoming("slow", "2348001234567", {"type": "text", "text": "hi"})
+    first = wasender_queue._claim("in")
+    wasender_queue._finish(first["id"], "pending", 60)
+    await wasender_queue.enqueue_incoming("same", "2348001234567", {"type": "text", "text": "name"})
+    await wasender_queue.enqueue_incoming("other", "2348007654321", {"type": "text", "text": "hi"})
+    assert wasender_queue._claim("in")["payload"]["phone"] == "2348007654321"
+    assert wasender_queue._claim("in") is None
+
+
+@pytest.mark.asyncio
+async def test_slow_sender_does_not_occupy_all_inbox_workers(monkeypatch):
+    import asyncio
+    slow_started, release_slow, fast_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def process(payload):
+        if payload["phone"] == "2348001234567":
+            slow_started.set()
+            await release_slow.wait()
+        else:
+            fast_done.set()
+    monkeypatch.setattr(wasender_queue, "_incoming", process)
+    await wasender_queue.enqueue_incoming("slow", "2348001234567", {"type": "text", "text": "hi"})
+    await wasender_queue.enqueue_incoming("fast", "2348007654321", {"type": "text", "text": "hi"})
+    try:
+        await wasender_queue.start()
+        await asyncio.wait_for(slow_started.wait(), 5)
+        await asyncio.wait_for(fast_done.wait(), 5)
+        assert not release_slow.is_set()
+    finally:
+        release_slow.set()
+        await wasender_queue.stop()
+
+
+@pytest.mark.asyncio
+async def test_outgoing_stays_serial_across_recipients():
+    await wasender_queue.enqueue_outgoing("2348001234567", "first")
+    await wasender_queue.enqueue_outgoing("2348007654321", "second")
+    assert wasender_queue._claim("out") is not None
+    assert wasender_queue._claim("out") is None
+
+
+@pytest.mark.asyncio
+async def test_active_jobs_renew_the_short_lease(monkeypatch):
+    import asyncio
+    import time
+    import app.whatsapp.wasender_queue as queue_module
+    renewed, release = asyncio.Event(), asyncio.Event()
+    original = wasender_queue._renew_lease
+    loop = asyncio.get_running_loop()
+    def renew(job):
+        result = original(job)
+        loop.call_soon_threadsafe(renewed.set)
+        return result
+    async def process(payload):
+        await release.wait()
+    monkeypatch.setattr(queue_module, "LEASE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(wasender_queue, "_renew_lease", renew)
+    monkeypatch.setattr(wasender_queue, "_incoming", process)
+    await wasender_queue.enqueue_incoming("lease", "2348001234567", {"type": "text", "text": "hi"})
+    task = asyncio.create_task(wasender_queue.process_one("in"))
+    try:
+        await asyncio.wait_for(renewed.wait(), 5)
+        assert queue_rows()[0]["available"] > time.time() + 50
+        assert wasender_queue._claim("in") is None
+    finally:
+        release.set()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_old_attempt_cannot_renew_reclaimed_job():
+    await wasender_queue.enqueue_incoming("lease", "2348001234567", {"type": "text", "text": "hi"})
+    old = wasender_queue._claim("in")
+    with wasender_queue._connect() as db:
+        db.execute("UPDATE jobs SET available=0")
+    new = wasender_queue._claim("in")
+    assert wasender_queue._renew_lease(old) == 0
+    assert wasender_queue._renew_lease(new) == 1
+
+
+@pytest.mark.asyncio
+async def test_startup_shortens_legacy_fifteen_minute_leases():
+    import time
+    await wasender_queue.enqueue_incoming("legacy", "2348001234567", {"type": "text", "text": "hi"})
+    wasender_queue._claim("in")
+    with wasender_queue._connect() as db:
+        db.execute("UPDATE jobs SET available=?", (time.time() + 900,))
+    wasender_queue._initialize()
+    assert queue_rows()[0]["available"] <= time.time() + 60

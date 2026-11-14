@@ -9,7 +9,7 @@ Set `WHATSAPP_PROVIDER=meta` to use the existing Meta transport. Wasender sessio
 
 ## Delivery and workers
 
-Incoming webhooks are validated and committed to a SQLite inbox before HTTP 200 is returned. Message IDs are deduplicated for seven days (completed records are cleaned on startup). A background consumer processes messages in order, so concurrent replies cannot advance a menu twice. Invalid menu replies preserve the current choices; type `menu`, `cancel`, or another navigation command to leave them.
+Incoming webhooks are validated and committed to a SQLite inbox before HTTP 200 is returned. Message IDs are deduplicated for seven days (completed records are cleaned on startup). Four inbox consumers process independent senders concurrently (`WASENDER_INBOX_WORKERS`, default 4), while replies from each sender stay in order. A slow or retrying sender does not block other conversations. Invalid menu replies preserve the current choices; type `menu`, `cancel`, or another navigation command to leave them.
 
 Outgoing messages are committed to an outbox and sent in order. A queued response means accepted locally, not delivered to WhatsApp. Menu choices become active only after Wasender accepts the send. HTTP 429 responses respect `retry_after`, `Retry-After`, and rate-limit reset headers. Transient network/server errors retry with backoff; exhausted attempts and provider rejections remain in the database as `failed`. Missing credentials, disconnected-session errors, and HTTP 401/402/403/409/503 leave messages pending for automatic retries every minute. Check logs for job IDs and status codes; secrets and provider response bodies are not logged.
 
@@ -21,7 +21,7 @@ The default queue database is `data/wasender.sqlite3`, configurable with `WASEND
 .venv/Scripts/python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 ```
 
-Workers on the same host must share the same SQLite file and Redis sessions. Separate hosts/replicas require a shared message broker instead of separate SQLite files. Use Redis for production conversation state; memory-only sessions do not survive a restart. A crashed worker's leased job is retried after 15 minutes. Processing/delivery is at least once across crashes: a crash after an external side effect but before marking the job done can repeat that effect. Booking/payment operations must retain their own idempotency guarantees.
+Workers on the same host must share the same SQLite file and Redis sessions. Separate hosts/replicas require a shared message broker instead of separate SQLite files. Use Redis for production conversation state; memory-only sessions do not survive a restart. Workers renew a one-minute lease every 15 seconds; after a crash, the job becomes eligible within one minute of the last renewal. Processing/delivery is at least once across crashes: a crash after an external side effect but before marking the job done can repeat that effect. Booking/payment operations must retain their own idempotency guarantees.
 
 ## Check your credentials without sending a message
 
@@ -40,5 +40,12 @@ This reads the configured key, calls `GET /api/status`, and prints only configur
 - No incoming messages: confirm the public HTTPS URL ends in `/api/wasender/webhook` and `messages.received` is enabled. The status check cannot verify webhook settings.
 
 After reconnecting, send a message yourself to the linked account from another number, finish onboarding, and test a provider booking alert with a numbered reply. This verifies both webhook delivery and outgoing messages.
+
+## Slow replies
+
+- `REDIS_URL` must point to a reachable Redis instance. `localhost` only works when Redis runs on the same host/container. Set it to an empty value to explicitly use memory sessions for development; use a real Redis URL in production. Failed connections now pause reconnects for 30 seconds instead of retrying during every session operation, with a bounded first connection attempt.
+- Logs include `queue_wait_ms` and `processing_ms` per job. A large incoming processing time points to database/session/AI work; outgoing `rate limited` logs show the exact retry delay. No message text or phone is included in these timing logs.
+- Wasender trial accounts permit only one outgoing message per minute. Paid account protection permits one every five seconds. Keep the interval appropriate to the account.
+- Render Free services spin down after 15 minutes without inbound traffic and take about a minute to wake. They also lose local SQLite files on restart/spin-down. Use an always-on instance with a persistent disk for this deployment's queue. See [Render Free service limitations](https://render.com/docs/free) and [Wasender rate limits](https://www.wasenderapi.com/api-docs/rate-limits/understanding-rate-limits).
 
 References: [Getting started](https://www.wasenderapi.com/api-docs/getting-started/getting-started-with-wasenderapi), [webhook setup](https://app.wasenderapi.com/api-docs/webhooks/webhook-setup/), and [message received event](https://app.wasenderapi.com/api-docs/webhooks/webhook-message-received).
