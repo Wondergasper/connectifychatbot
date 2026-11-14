@@ -30,33 +30,21 @@ class WhatsAppService:
                 logger.error(f"[WhatsAppService] Listener error: {e}")
 
     async def _send_text_menu(self, to: str, text: str, choices: List[Dict[str, str]]) -> Dict[str, Any]:
-        from app.whatsapp.session import session_manager
+        from app.whatsapp.wasender_queue import wasender_queue
 
-        await session_manager.update_session(to, {"wasenderChoices": choices})
         lines = [text, ""] + [f"{i}. {item.get('title', '')}" for i, item in enumerate(choices, 1)]
         lines.append("Reply with the number of your choice.")
-        return await self.send_message(to, "\n".join(lines))
+        numbered_text = "\n".join(lines)
+        self._notify_listeners(to, {"type": "text", "to": to, "text": numbered_text})
+        return await wasender_queue.enqueue_outgoing(to, numbered_text, choices=choices)
 
     async def send_message(self, to: str, text: str, attempt: int = 1) -> Dict[str, Any]:
         """Sends a plain text message to a user via Meta WhatsApp Cloud API."""
         self._notify_listeners(to, {"type": "text", "to": to, "text": text})
 
         if settings.WHATSAPP_PROVIDER.lower() == "wasender":
-            if not settings.WASENDER_API_KEY:
-                logger.error("WasenderAPI key is not configured")
-                return {"error": "WasenderAPI key is not configured"}
-            try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    response = await client.post(
-                        "https://www.wasenderapi.com/api/send-message",
-                        json={"to": to, "text": text},
-                        headers={"Authorization": f"Bearer {settings.WASENDER_API_KEY}"},
-                    )
-                response.raise_for_status()
-                return response.json()
-            except (httpx.HTTPError, ValueError) as exc:
-                logger.error("WasenderAPI send failed: %s", exc)
-                return {"error": "WasenderAPI send failed"}
+            from app.whatsapp.wasender_queue import wasender_queue
+            return await wasender_queue.enqueue_outgoing(to, text)
 
         if not self.token or not self.phone_id:
             logger.warning(f"[WhatsAppService] (Simulated Text) -> {to}:\n{text}")

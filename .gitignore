@@ -21,7 +21,7 @@ dump.rdb
 htmlcov/
 .vscode/
 
-tests/
+data/
 
 live_setup_rpcs_and_seeds.sql
 

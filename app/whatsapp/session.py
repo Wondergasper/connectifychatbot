@@ -13,6 +13,11 @@ KEY_PREFIX = "connectify:session:"
 _memory_store: Dict[str, Dict[str, Any]] = {}
 
 
+def session_phone(phone_number: str) -> str:
+    """Use one session identity for database E.164 numbers and webhook senders."""
+    return str(phone_number).strip().lstrip("+")
+
+
 def default_session() -> Dict[str, Any]:
     return {
         "step": "init",
@@ -28,6 +33,7 @@ def default_session() -> Dict[str, Any]:
 
 class SessionManager:
     async def get_session(self, phone_number: str) -> Dict[str, Any]:
+        phone_number = session_phone(phone_number)
         key = f"{KEY_PREFIX}{phone_number}"
         client = await get_redis_client()
 
@@ -48,6 +54,7 @@ class SessionManager:
         return dict(_memory_store[phone_number])
 
     async def update_session(self, phone_number: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        phone_number = session_phone(phone_number)
         key = f"{KEY_PREFIX}{phone_number}"
         current = await self.get_session(phone_number)
         merged = {**current, **updates}
@@ -64,6 +71,7 @@ class SessionManager:
         return merged
 
     async def clear_session(self, phone_number: str) -> bool:
+        phone_number = session_phone(phone_number)
         key = f"{KEY_PREFIX}{phone_number}"
         client = await get_redis_client()
         if client is not None:

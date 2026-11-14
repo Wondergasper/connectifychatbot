@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.core.database import get_supabase_client
 from app.core.redis import get_redis_client, close_redis_client
 from app.whatsapp.webhook import router as whatsapp_router
+from app.whatsapp.wasender_queue import wasender_queue
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,10 +23,14 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Connectify WhatsApp Backend (FastAPI)...")
     get_supabase_client()
     await get_redis_client()
-    yield
-    # Shutdown
-    logger.info("Shutting down Connectify WhatsApp Backend...")
-    await close_redis_client()
+    if settings.WHATSAPP_PROVIDER.lower() == "wasender":
+        await wasender_queue.start()
+    try:
+        yield
+    finally:
+        logger.info("Shutting down Connectify WhatsApp Backend...")
+        await wasender_queue.stop()
+        await close_redis_client()
 
 
 app = FastAPI(

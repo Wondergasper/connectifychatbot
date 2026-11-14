@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from typing import Optional, Dict, Any, List
@@ -61,11 +62,11 @@ class ConnectifyRepository:
         quoted_raw_phone = quote_postgrest_value(phone_number)
 
         response = (
-            client.from_("app_users")
+            await asyncio.to_thread(client.from_("app_users")
             .select(WHATSAPP_USER_SELECT)
             .or_(f"phone.eq.{quoted_phone},phone.eq.{quoted_raw_phone}")
             .maybe_single()
-            .execute()
+            .execute)
         )
         return response.data if response else None
 
@@ -102,7 +103,7 @@ class ConnectifyRepository:
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
 
-        response = client.from_("app_users").insert(payload).execute()
+        response = await asyncio.to_thread(client.from_("app_users").insert(payload).execute)
         return response.data[0] if (response.data and isinstance(response.data, list)) else (response.data or {})
 
     async def update_user_name(self, user_id: str, full_name: str) -> Dict[str, Any]:
@@ -115,11 +116,11 @@ class ConnectifyRepository:
             }
 
         user_res = (
-            client.from_("app_users")
+            await asyncio.to_thread(client.from_("app_users")
             .select(WHATSAPP_USER_SELECT)
             .eq("id", user_id)
             .single()
-            .execute()
+            .execute)
         )
         current_profile = (user_res.data or {}).get("profile") or {}
         updated_profile = {
@@ -129,10 +130,10 @@ class ConnectifyRepository:
         }
 
         response = (
-            client.from_("app_users")
+            await asyncio.to_thread(client.from_("app_users")
             .update({"name": full_name, "profile": updated_profile})
             .eq("id", user_id)
-            .execute()
+            .execute)
         )
         return response.data[0] if (response.data and isinstance(response.data, list)) else (response.data or {})
 
@@ -147,11 +148,11 @@ class ConnectifyRepository:
             }
 
         user_res = (
-            client.from_("app_users")
+            await asyncio.to_thread(client.from_("app_users")
             .select(WHATSAPP_USER_SELECT)
             .eq("id", user_id)
             .single()
-            .execute()
+            .execute)
         )
         current_profile = (user_res.data or {}).get("profile") or {}
         updated_profile = {
@@ -160,10 +161,10 @@ class ConnectifyRepository:
         }
 
         response = (
-            client.from_("app_users")
+            await asyncio.to_thread(client.from_("app_users")
             .update({"role": valid_role, "profile": updated_profile})
             .eq("id", user_id)
-            .execute()
+            .execute)
         )
         return response.data[0] if (response.data and isinstance(response.data, list)) else (response.data or {})
 
@@ -181,11 +182,11 @@ class ConnectifyRepository:
             }
 
         user_res = (
-            client.from_("app_users")
+            await asyncio.to_thread(client.from_("app_users")
             .select(WHATSAPP_USER_SELECT)
             .eq("id", user_id)
             .single()
-            .execute()
+            .execute)
         )
         current_profile = (user_res.data or {}).get("profile") or {}
         updated_profile = {
@@ -195,10 +196,10 @@ class ConnectifyRepository:
         }
 
         response = (
-            client.from_("app_users")
+            await asyncio.to_thread(client.from_("app_users")
             .update({"profile": updated_profile})
             .eq("id", user_id)
-            .execute()
+            .execute)
         )
         return response.data[0] if (response.data and isinstance(response.data, list)) else (response.data or {})
 
@@ -208,11 +209,11 @@ class ConnectifyRepository:
             return {"balance": 0.0, "currency": "NGN", "formatted": "NGN 0"}
 
         response = (
-            client.from_("app_users")
+            await asyncio.to_thread(client.from_("app_users")
             .select("id, wallet_balance, wallet_currency")
             .eq("id", user_id)
             .single()
-            .execute()
+            .execute)
         )
         data = response.data or {}
         balance = float(data.get("wallet_balance") or 0)
@@ -229,10 +230,10 @@ class ConnectifyRepository:
             return []
 
         response = (
-            client.from_("categories")
+            await asyncio.to_thread(client.from_("categories")
             .select("id, name, description")
             .limit(limit)
-            .execute()
+            .execute)
         )
         return response.data or []
 
@@ -279,9 +280,9 @@ class ConnectifyRepository:
             query = query.or_(f"location->>address.ilike.{quoted_loc},location->>city.ilike.{quoted_loc}")
 
         response = (
-            query.order("rating_average", desc=True, nullsfirst=False)
+            await asyncio.to_thread(query.order("rating_average", desc=True, nullsfirst=False)
             .order("rating_count", desc=True)
-            .execute()
+            .execute)
         )
 
         rows = response.data or []
@@ -339,17 +340,17 @@ class ConnectifyRepository:
             "p_address": {"whatsapp_location": session.get("location") or "Unknown"},
         }
 
-        rpc_res = client.rpc("create_booking_atomic", rpc_params).execute()
+        rpc_res = await asyncio.to_thread(client.rpc("create_booking_atomic", rpc_params).execute)
         if hasattr(rpc_res, "error") and rpc_res.error:
             raise Exception(rpc_res.error)
 
         # Fetch the created booking with provider and customer phones
         booking_res = (
-            client.from_("bookings")
+            await asyncio.to_thread(client.from_("bookings")
             .select("*, provider:provider_id(id, name, phone), customer:customer_id(id, name, phone)")
             .eq("id", booking_id)
             .single()
-            .execute()
+            .execute)
         )
         return booking_res.data
 
@@ -359,11 +360,11 @@ class ConnectifyRepository:
             return None
 
         response = (
-            client.from_("bookings")
+            await asyncio.to_thread(client.from_("bookings")
             .select("*, provider:provider_id(id, name, phone), customer:customer_id(id, name, phone), service:service_id(name, category)")
             .eq("id", booking_id)
             .single()
-            .execute()
+            .execute)
         )
         return response.data
 
@@ -373,13 +374,13 @@ class ConnectifyRepository:
             return []
 
         response = (
-            client.from_("bookings")
+            await asyncio.to_thread(client.from_("bookings")
             .select("*, customer:customer_id(name, phone), service:service_id(name)")
             .eq("provider_id", provider_id)
             .eq("status", "pending")
             .order("created_at", desc=True)
             .limit(limit)
-            .execute()
+            .execute)
         )
         return response.data or []
 
@@ -389,13 +390,13 @@ class ConnectifyRepository:
             return []
 
         response = (
-            client.from_("bookings")
+            await asyncio.to_thread(client.from_("bookings")
             .select("*, customer:customer_id(name, phone), service:service_id(name)")
             .eq("provider_id", provider_id)
             .in_("status", ["confirmed", "in_progress"])
             .order("date", desc=False)
             .limit(limit)
-            .execute()
+            .execute)
         )
         return response.data or []
 
@@ -405,12 +406,12 @@ class ConnectifyRepository:
             return []
 
         response = (
-            client.from_("bookings")
+            await asyncio.to_thread(client.from_("bookings")
             .select("*, provider:provider_id(name, phone), service:service_id(name)")
             .eq("customer_id", customer_id)
             .order("created_at", desc=True)
             .limit(limit)
-            .execute()
+            .execute)
         )
         return response.data or []
 
@@ -419,14 +420,14 @@ class ConnectifyRepository:
         if not client:
             return {"id": booking_id, "status": status, "actor_id": actor_id}
 
-        rpc_res = client.rpc("update_booking_status_atomic", {
+        rpc_res = await asyncio.to_thread(client.rpc("update_booking_status_atomic", {
             "p_booking_id": booking_id,
             "p_status": status,
             "p_actor_id": actor_id,
             "p_cancellation_reason": None,
             "p_new_date": None,
             "p_new_time": None,
-        }).execute()
+        }).execute)
 
         if hasattr(rpc_res, "error") and rpc_res.error:
             raise Exception(rpc_res.error)
@@ -461,7 +462,7 @@ class ConnectifyRepository:
         if not client:
             return {"id": str(uuid.uuid4()), **service_payload}
 
-        response = client.from_("services").insert(service_payload).execute()
+        response = await asyncio.to_thread(client.from_("services").insert(service_payload).execute)
         return response.data[0] if (response.data and isinstance(response.data, list)) else (response.data or {})
 
     async def complete_booking_with_escrow_payout(
@@ -480,7 +481,7 @@ class ConnectifyRepository:
             client = self.client
             wallet_result = None
             if client:
-                rpc_res = client.rpc("create_manual_wallet_credit", {
+                rpc_res = await asyncio.to_thread(client.rpc("create_manual_wallet_credit", {
                     "p_user_id": provider_id,
                     "p_amount": payout_amount,
                     "p_currency": "NGN",
@@ -492,7 +493,7 @@ class ConnectifyRepository:
                         "platform_commission": commission,
                         "commission_rate": comm_rate,
                     },
-                }).execute()
+                }).execute)
                 wallet_result = getattr(rpc_res, "data", None)
 
             return {

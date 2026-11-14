@@ -1,5 +1,6 @@
 import os
 from typing import Optional
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +20,9 @@ class Settings(BaseSettings):
     WHATSAPP_PROVIDER: str = "meta"
     WASENDER_API_KEY: Optional[str] = None
     WASENDER_WEBHOOK_SECRET: Optional[str] = None
+    WASENDER_QUEUE_DB: str = "data/wasender.sqlite3"
+    # Safe for paid sessions with account protection; trial accounts need 60.
+    WASENDER_SEND_INTERVAL_SECONDS: float = Field(default=5.0, ge=0.25)
     WHATSAPP_TOKEN: Optional[str] = os.getenv("WHATSAPP_TOKEN")
     WHATSAPP_PHONE_ID: Optional[str] = os.getenv("WHATSAPP_PHONE_ID")
     WHATSAPP_APP_SECRET: Optional[str] = os.getenv("WHATSAPP_APP_SECRET")
