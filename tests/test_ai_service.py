@@ -84,7 +84,7 @@ def test_extract_intent_heuristically():
     # Case 4: FAQ Escrow & Payment
     res4 = extract_intent_heuristically("how do i pay? is it safe or scam?", {})
     assert "Escrow" in res4["replyText"]
-    assert "100% protected" in res4["replyText"]
+    assert "check the provider" in res4["replyText"]
     assert res4["sessionUpdates"]["isConfirmed"] is False
     assert len(res4["suggestions"]) > 0
 

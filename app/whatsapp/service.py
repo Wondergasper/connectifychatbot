@@ -2,6 +2,7 @@ import logging
 from typing import Dict, Any, List, Optional
 import httpx
 from app.core.config import settings
+from app.whatsapp.memory import capture_reply
 
 logger = logging.getLogger("connectify.whatsapp_service")
 
@@ -23,6 +24,7 @@ class WhatsAppService:
             self._listeners.remove(callback)
 
     def _notify_listeners(self, to: str, message_data: Dict[str, Any]):
+        capture_reply(to, message_data)
         for listener in list(self._listeners):
             try:
                 listener(to, message_data)
@@ -33,7 +35,7 @@ class WhatsAppService:
         from app.whatsapp.wasender_queue import wasender_queue
 
         lines = [text, ""] + [f"{i}. {item.get('title', '')}" for i, item in enumerate(choices, 1)]
-        lines.append("Reply with the number of your choice.")
+        lines.append("Choose a number, or tell me what you need in your own words.")
         numbered_text = "\n".join(lines)
         self._notify_listeners(to, {"type": "text", "to": to, "text": numbered_text})
         return await wasender_queue.enqueue_outgoing(to, numbered_text, choices=choices)

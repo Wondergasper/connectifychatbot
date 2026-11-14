@@ -3,14 +3,22 @@ WhatsApp Message Templates for Connectify Nigeria
 Formatted for Meta WhatsApp Cloud API (plain text, interactive buttons, interactive lists).
 """
 from typing import Dict, Any, List, Optional
+from datetime import date
+
+
+def readable_date(value):
+    try:
+        parsed = date.fromisoformat(str(value))
+        return parsed.strftime("%A %d %B %Y") + f" ({value})"
+    except ValueError:
+        return str(value or "Not set yet")
 
 
 def welcome() -> str:
     return (
-        "Welcome to *Connectify Nigeria*! 🇳🇬\n\n"
-        "Your on-demand marketplace for trusted local service providers "
-        "(plumbers, electricians, tailors, cleaners, mechanics, etc.).\n\n"
-        "First, what is your full name?"
+        "Hi, welcome to *Connectify* 👋\n"
+        "I can help you find and book local service providers.\n\n"
+        "What is your full name?"
     )
 
 
@@ -28,8 +36,8 @@ def customer_main_menu(first_name: str = "") -> Dict[str, Any]:
     return {
         "text": (
             f"Hello {first_name}! How can Connectify help you today?\n\n"
-            "💡 _Tip: You can also type what you need directly, e.g._\n"
-            '_"I need a generator mechanic in Surulere tomorrow 10am"_'
+            'Tell me what you need, for example: "A painter in Lugbe, Abuja next Friday."\n'
+            "You can also use the options below."
         ),
         "buttons": [
             {"id": "CMD_FIND_SERVICE", "title": "🔍 Find a Service"},
@@ -106,10 +114,10 @@ def provider_list(providers: List[Dict[str, Any]]) -> str:
 
 def confirm_summary(session: Dict[str, Any]) -> str:
     lines = [
-        "📝 *Please confirm your booking request:*\n",
-        f"*Service:* {session.get('service')}",
-        f"*Location:* {session.get('location')}",
-        f"*Date:* {session.get('date') or 'Not set yet'}",
+        "*Please confirm your booking request:*\n",
+        f"🛠 *Service:* {session.get('service')}",
+        f"📍 *Location:* {session.get('location')}",
+        f"📅 *Date:* {readable_date(session.get('date'))}",
     ]
     if session.get("time"):
         lines.append(f"*Time:* {session.get('time')}")
@@ -117,7 +125,7 @@ def confirm_summary(session: Dict[str, Any]) -> str:
         lines.append(f"*Budget:* ₦{session.get('budget')}")
     if session.get("urgency") == "emergency":
         lines.append("🚨 *Urgent Request*")
-    lines.append("\nIs this correct? Reply *YES* to find providers or *change details* to edit.")
+    lines.append("\nDoes that look right? Say *yes* to find providers, or tell me what to change.")
     return "\n".join(lines)
 
 
@@ -132,6 +140,8 @@ def ask_date_time(session=None) -> str:
     if session.get("time") and not session.get("date"):
         return details + f"Time saved: *{session['time']}*. Which date would you like? For example, *18 November*, *the 18th*, or *tomorrow*."
     if session.get("date") and not session.get("time"):
+        if session.get("timePeriod"):
+            return details + f"I've saved *{readable_date(session['date'])}*, in the *{session['timePeriod']}*. What time works for you?"
         return details + f"Date saved: *{session['date']}*. What time would you like? For example, *10am* or *14:30*."
     return details + 'Which date and time would you like? For example, *18 November at 10am* or *tomorrow 3pm*.'
 

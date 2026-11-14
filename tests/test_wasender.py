@@ -74,7 +74,7 @@ async def test_wasender_menu_sends_numbered_text(monkeypatch):
     assert not (await session_manager.get_session("2348001234567")).get("wasenderChoices")
     assert await wasender_queue.process_one("out")
     import json
-    assert json.loads(requests[0].content) == {"to": "+2348001234567", "text": "Choose\n\n1. Customer\nReply with the number of your choice."}
+    assert json.loads(requests[0].content) == {"to": "+2348001234567", "text": "Choose\n\n1. Customer\nChoose a number, or tell me what you need in your own words."}
     assert requests[0].headers["authorization"] == "Bearer test-key"
     assert (await session_manager.get_session("2348001234567"))["wasenderChoices"][0]["id"] == "ROLE_CUSTOMER"
 
@@ -98,7 +98,7 @@ async def test_duplicate_reply_cannot_select_next_menu(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("invalid", ["0", "99", "oops", "9999999999999999999999999"])
+@pytest.mark.parametrize("invalid", ["0", "99", "9999999999999999999999999"])
 async def test_invalid_reply_preserves_menu(monkeypatch, invalid):
     handler = AsyncMock()
     monkeypatch.setattr(conversation_manager, "handle_incoming_message", handler)
@@ -403,3 +403,14 @@ async def test_late_outgoing_menu_cannot_activate_in_a_later_booking_step(monkey
     await session_manager.update_session("2348001234567", {"step": "AWAITING_DATETIME"})
     await wasender_queue.process_one("out")
     assert not (await session_manager.get_session("2348001234567")).get("wasenderChoices")
+
+
+@pytest.mark.asyncio
+async def test_natural_request_passes_through_numbered_menu(monkeypatch):
+    handler = AsyncMock()
+    monkeypatch.setattr(conversation_manager, "handle_incoming_message", handler)
+    await session_manager.update_session("2348001234567", {"step": "MAIN_MENU", "wasenderChoices": [{"id": "CMD_FIND_SERVICE", "title": "Find a service"}]})
+    text = "I need a painter in Lugbe next Friday"
+    await post_webhook(webhook_payload(text))
+    await wasender_queue.process_one("in")
+    handler.assert_awaited_once_with("2348001234567", {"type": "text", "text": text})

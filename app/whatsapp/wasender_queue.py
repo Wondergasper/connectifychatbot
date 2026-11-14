@@ -159,7 +159,7 @@ class WasenderQueue:
                 choice = next((item for item in choices if str(item.get("title", "")).lower() == text.lower()), None)
                 if not choice and text.isascii() and text.isdigit() and len(text) <= 2 and 1 <= int(text) <= len(choices):
                     choice = choices[int(text) - 1]
-                if not choice and text.lower() in {"yes", "correct", "confirm"}:
+                if not choice and text.lower() in {"yes", "correct", "confirm", "looks good", "go ahead", "yes please", "proceed"}:
                     choice = next((item for item in choices if item.get("id") in {"CONFIRM_YES", "LOCATION_YES"}), None)
                 if not choice and text.lower() in {"no", "change details"}:
                     choice = next((item for item in choices if item.get("id") in {"CMD_EDIT_BOOKING", "LOCATION_NO"}), None)
@@ -167,8 +167,11 @@ class WasenderQueue:
                     incoming = {"type": "interactive", "text": choice.get("title", ""), "actionId": choice.get("id")}
                     await session_manager.update_session(phone, {"wasenderChoices": []})
                 else:
-                    await whatsapp_service.send_message(phone, f"Please reply with a number from 1 to {len(choices)}, or type menu.")
-                    return
+                    if text.isascii() and text.isdigit():
+                        await whatsapp_service.send_message(phone, f"Please choose a number from 1 to {len(choices)}, or tell me what you need.")
+                        return
+                    # Menus are optional shortcuts. Natural language must reach
+                    # the assistant instead of being rejected by the transport.
             elif choices:
                 await session_manager.update_session(phone, {"wasenderChoices": []})
         await conversation_manager.handle_incoming_message(phone, incoming)

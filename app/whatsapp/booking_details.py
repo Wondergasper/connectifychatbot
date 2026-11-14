@@ -32,7 +32,32 @@ def schedule_updates(message, session):
         updates["date"] = date
     if time:
         updates["time"] = time
+        if session.get("timePeriod"):
+            updates["timePeriod"] = None
+    elif re.search(r"\b(morning|afternoon|evening|night|tonight)\b", message, re.I):
+        period = re.search(r"\b(morning|afternoon|evening|night|tonight)\b", message, re.I)[1].lower()
+        updates["timePeriod"] = "evening" if period == "tonight" else period
+        updates["time"] = None  # An afternoon is not an invented appointment hour.
     return updates
+
+
+def is_question(text):
+    return bool(re.search(r"\?|\b(how|why|what|can you|could you|do you|is it|explain|tell me|cost|price|pay|safe)\b", text, re.I))
+
+
+def needs_interpretation(text, session):
+    """Simple exact answers remain instant; prose/corrections/questions reach AI."""
+    if is_question(text):
+        return True
+    if re.search(r"\b(actually|instead|same|rather|prefer|change|switch|make it|i need|i want|i'm|i am|but)\b", text, re.I):
+        return True
+    if session.get("step") == "AWAITING_LOCATION":
+        return len(text.split()) > 6
+    if session.get("step") == "AWAITING_DATETIME":
+        return not schedule_updates(text, session) and not text.isdigit()
+    if session.get("step") in {"AWAITING_CONFIRMATION", "PROVIDER_SELECTION"}:
+        return not text.isdigit() and not schedule_updates(text, session)
+    return len(text.split()) > 4
 
 
 def schedule_problem(session):

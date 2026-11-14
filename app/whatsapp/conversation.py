@@ -1,16 +1,20 @@
 import logging
+import re
 from typing import Dict, Any, Optional, Union
 
 from app.whatsapp.session import session_manager
 from app.whatsapp.service import whatsapp_service
 from app.whatsapp import messages
 from app.whatsapp import ai_service
-from app.whatsapp.booking_details import BOOKING_STEPS, has_draft, location_label, schedule_updates, schedule_problem
+from app.whatsapp.memory import reply_capture, history_tail
+from app.whatsapp.booking_details import BOOKING_STEPS, has_draft, location_label, schedule_updates, schedule_problem, needs_interpretation, is_question
 from app.repositories.connectify_repository import ConnectifyRepository
 
 logger = logging.getLogger("connectify.conversation")
 GREETINGS = {"hi", "hello", "hey", "help", "start", "hi there", "hello there",
              "good morning", "good afternoon", "good evening"}
+CONFIRMATIONS = {"yes", "yup", "correct", "confirm", "yes, find pros", "confirm & find pros",
+                 "looks good", "that's right", "that is correct", "go ahead", "yes please", "proceed"}
 
 
 def get_user_name(user: Optional[Dict[str, Any]]) -> str:
@@ -77,6 +81,24 @@ class ConversationManager:
         self.repository = repository or ConnectifyRepository()
 
     async def handle_incoming_message(self, phone_number: str, raw_message: Any) -> Dict[str, Any]:
+        incoming = normalize_incoming(raw_message)
+        before = await session_manager.get_session(phone_number)
+        history = history_tail(before.get("history") or [])
+        text = incoming["text"] or ("Shared a location pin" if incoming.get("location") else incoming.get("actionId") or "")
+        history = history_tail(history + [{"role": "user", "text": text}])
+        await session_manager.update_session(phone_number, {"history": history})
+        capture = {"phone": str(phone_number).lstrip("+"), "replies": []}
+        token = reply_capture.set(capture)
+        try:
+            return await self._handle_message(phone_number, raw_message)
+        finally:
+            reply_capture.reset(token)
+            after = await session_manager.get_session(phone_number)
+            # Explicit reset/booked sessions must not resurrect the previous draft/history.
+            history = history_tail(after.get("history") or [])
+            await session_manager.update_session(phone_number, {"history": history_tail(history + capture["replies"])})
+
+    async def _handle_message(self, phone_number: str, raw_message: Any) -> Dict[str, Any]:
         try:
             incoming = normalize_incoming(raw_message)
             trimmed = incoming["text"]
@@ -242,6 +264,13 @@ class ConversationManager:
             user_profile = user.get("profile") or {}
             is_onboarded = bool(user_profile.get("onboarded", False) and has_name)
 
+            if session.get("step") == "PROVIDER_SELECTION" and not is_question(trimmed) and re.search(r"\b(first|second|third|(?:number|option|provider)\s*[1-3])\b", lower):
+                return await self.handle_provider_selection(phone_number, trimmed, user, session)
+
+            if has_name and not is_greeting and lower not in CONFIRMATIONS | {"change details", "edit", "change", "no", "continue", "resume"} and (not action_id or action_id == trimmed):
+                if is_question(trimmed) or (has_draft(session) and needs_interpretation(trimmed, session)):
+                    return await self.handle_natural_message(phone_number, trimmed, session, user)
+
             if has_draft(session):
                 if action_id in {"EDIT_SERVICE", "EDIT_LOCATION", "EDIT_DATE", "EDIT_TIME"}:
                     return await self.edit_booking(phone_number, session, action_id)
@@ -301,6 +330,9 @@ class ConversationManager:
 
             # Onboarding Step: Collect user's full name
             if not has_name or session.get("step") == "ONBOARDING":
+                if not has_name and re.search(r"\b(need|looking for|book|want|find)\b", lower):
+                    await session_manager.update_session(phone_number, {"step": "ONBOARDING", "pendingRequest": trimmed})
+                    return await whatsapp_service.send_message(phone_number, "I can help with that. First, what is your full name?")
                 if len(trimmed) < 2:
                     await session_manager.update_session(phone_number, {"step": "ONBOARDING"})
                     return await whatsapp_service.send_message(phone_number, messages.welcome())
@@ -308,6 +340,11 @@ class ConversationManager:
                 updated_user = await self.repository.update_user_name(get_user_id(user), trimmed)
                 await session_manager.update_session(phone_number, {"step": "ROLE_SELECTION"})
                 first_name = get_user_name(updated_user).split(" ")[0] or trimmed.split(" ")[0]
+                if session.get("pendingRequest"):
+                    updated_user = await self.repository.update_user_role(get_user_id(user), "customer")
+                    await self.repository.mark_onboarded(updated_user)
+                    restored = await session_manager.update_session(phone_number, {"pendingRequest": None, "step": "READY"})
+                    return await self.handle_natural_message(phone_number, session["pendingRequest"], restored, updated_user)
 
                 # Offer role selection interactive buttons
                 role_menu = messages.role_selection(first_name)
@@ -408,6 +445,46 @@ class ConversationManager:
             {"id": "CONFIRM_YES", "title": "Confirm & find pros"},
             {"id": "CMD_EDIT_BOOKING", "title": "Change details"},
         ])
+
+    async def handle_natural_message(self, phone_number, text, session, user=None):
+        response = await ai_service.analyze_intent(text, {**session, "role": (user or {}).get("role", "customer")})
+        updates = sanitize_session_updates(response.get("sessionUpdates") or {})
+        # AI cannot establish user consent, wallet state, or arbitrary FSM steps.
+        updates.pop("isConfirmed", None)
+        exact = schedule_updates(text, session)
+        if re.search(r"\bsame (place|location|area)\b", text, re.I):
+            updates.pop("location", None)
+        if re.search(r"\bsame (service|trade)\b", text, re.I):
+            updates.pop("service", None)
+        if response.get("intent") == "CONVERSATION_OR_FAQ" or (is_question(text) and response.get("source") == "local" and not exact and not re.search(r"\b(change|move|switch|book|need|want|reschedule)\b", text, re.I)):
+            return await whatsapp_service.send_message(phone_number, response.get("replyText") or "What would you like to know?")
+        for field in response.get("clearFields") or []:
+            if field in {"date", "time"}:
+                updates[field] = None
+        if response.get("timePeriod") and not updates.get("time"):
+            updates.update({"timePeriod": response["timePeriod"], "time": None})
+        updates.update(exact)
+        if updates.get("time"):
+            updates["timePeriod"] = None
+        if updates.get("service") or updates.get("location") or updates.get("date") or "time" in updates:
+            updates["matchedProviders"] = []
+        updated = await session_manager.update_session(phone_number, {
+            **updates, "aiCalls": int(session.get("aiCalls") or 0) + 1,
+        })
+        if not updated.get("service"):
+            return await whatsapp_service.send_message(phone_number, response.get("replyText") or "What service do you need?")
+        if updates.get("location"):
+            label, suggestion = location_label(updates["location"])
+            if suggestion:
+                return await self.capture_booking_location(phone_number, label)
+            updated = await session_manager.update_session(phone_number, {"location": label})
+        if not updates and response.get("replyText"):
+            if response.get("source") == "local" and has_draft(updated):
+                if updated.get("step") == "PROVIDER_SELECTION" and updated.get("matchedProviders"):
+                    return await whatsapp_service.send_message(phone_number, messages.provider_list(updated["matchedProviders"]))
+                return await self.advance_booking(phone_number, updated)
+            return await whatsapp_service.send_message(phone_number, response["replyText"])
+        return await self.advance_booking(phone_number, updated)
 
     async def capture_booking_location(self, phone_number, text):
         label, suggestion = location_label(text)
@@ -605,36 +682,8 @@ class ConversationManager:
             logger.error(f"[WhatsAppConversation] Error declining booking: {err}")
             return await whatsapp_service.send_message(phone_number, "Failed to update booking status.")
 
-    async def handle_service_search(
-        self, phone_number: str, message: str, session: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        current_calls = int(session.get("aiCalls") or 0)
-        ai_response = await ai_service.analyze_intent(message, session)
-
-        if ai_response.get("rateLimited"):
-            ai_response = ai_service.extract_intent_heuristically(message, session)
-
-        next_updates = {
-            **sanitize_session_updates(ai_response.get("sessionUpdates") or {}),
-            "aiCalls": min(current_calls + 1, ai_service.MAX_SESSION_AI_CALLS),
-        }
-        next_session = await session_manager.update_session(phone_number, next_updates)
-
-        if not next_session.get("isConfirmed"):
-            suggestions = ai_response.get("suggestions") or []
-            if suggestions and isinstance(suggestions, list):
-                buttons = [
-                    {"id": f"SUGG_{s.strip()[:15].replace(' ', '_')}", "title": s.strip()[:20]}
-                    for s in suggestions
-                    if s and s.strip()
-                ][:3]
-                if buttons:
-                    return await whatsapp_service.send_interactive_buttons(
-                        phone_number, ai_response.get("replyText"), buttons
-                    )
-            return await whatsapp_service.send_message(phone_number, ai_response.get("replyText"))
-
-        return await self.advance_booking(phone_number, next_session)
+    async def handle_service_search(self, phone_number: str, message: str, session: Dict[str, Any]) -> Dict[str, Any]:
+        return await self.handle_natural_message(phone_number, message, session)
 
     async def handle_confirmation_response(
         self,
@@ -644,7 +693,7 @@ class ConversationManager:
         action_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         text = message.lower().strip()
-        if text in ["yes", "yup", "correct", "confirm", "yes, find pros", "confirm & find pros"] or action_id == "CONFIRM_YES":
+        if text in CONFIRMATIONS or action_id == "CONFIRM_YES":
             if not ai_service.normalize_date(session.get("date")) or not ai_service.normalize_time(session.get("time")):
                 await session_manager.update_session(phone_number, {"step": "AWAITING_DATETIME"})
                 return await whatsapp_service.send_message(phone_number, messages.ask_date_time(session))
@@ -702,7 +751,15 @@ class ConversationManager:
     ) -> Dict[str, Any]:
         providers = session.get("matchedProviders") or []
         try:
-            choice_index = int(message.strip()) - 1
+            selection = message.strip().lower()
+            for word, number in {"first": "1", "second": "2", "third": "3"}.items():
+                if re.search(r"\b" + word + r"\b", selection) and not is_question(selection):
+                    selection = number
+                    break
+            numbered = re.search(r"\b(?:number|option|provider)\s*([1-3])\b", selection)
+            if numbered and not is_question(selection):
+                selection = numbered[1]
+            choice_index = int(selection) - 1
             if choice_index < 0 or choice_index >= len(providers):
                 return await whatsapp_service.send_message(
                     phone_number, "Please reply with a number from the list."
