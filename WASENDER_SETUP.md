@@ -60,4 +60,20 @@ Use `hi`, `resume`, or `continue` to resume an unfinished booking, including aft
 
 The latest 12 user/assistant messages (up to 800 characters each) are kept with the session to interpret references and follow-ups. Concurrent senders have separate reply captures. Reset clears this history. Provider records sent to Gemini include only display name, quoted price, rating, and area, excluding phone numbers and raw database payloads. AI can propose validated booking fields and answer questions; explicit backend actions still control provider selection, booking creation, and payments.
 
+## Long-term usage memory in Supabase
+
+The existing `app_users.profile.assistantMemory` JSON field stores each user's recent confirmed services (up to five), areas (up to three), latest confirmed request, latest booking request, and service booking counts. Counts are deduplicated against the latest 20 booking IDs; this is a personalization summary rather than a financial/audit ledger. Unconfirmed draft edits do not become saved preferences. The first returning greeting can initialize memory from an existing non-cancelled booking with a recorded WhatsApp location. Current name, role, and onboarding details continue to live in the user profile.
+
+This uses the existing profile column and needs no SQL migration. Profile writes compare the previous JSON value and retry concurrent edits so other profile settings are preserved. A failed preference write is logged and does not block provider search or booking creation.
+
+Memory survives Redis expiry, process restarts, and redeployments because it is read from Supabase for the authenticated WhatsApp sender. Returning customers can choose `Use last request` or say `same as last time` to reuse the service and area. Every reused request asks for a fresh date and time and still requires confirmation. The assistant does not assume an earlier booking was fulfilled or paid.
+
+Commands:
+- `memory` or `what do you remember about me`: view saved usage preferences.
+- `memory off`: stop using and updating personalized service preferences.
+- `memory on`: enable future usage memory again.
+- `forget my preferences`: clear the preference summary and disable personalization. This does not delete account identity, booking records, or the current booking draft.
+
+Raw conversation transcripts are not stored permanently in Supabase by this feature. Short-term chat history remains in the 24-hour session. Gemini sees only the sanitized preference summary, excluding internal booking IDs. A normal `cancel` resets the conversation draft/history; it does not erase long-term preferences.
+
 References: [Getting started](https://www.wasenderapi.com/api-docs/getting-started/getting-started-with-wasenderapi), [webhook setup](https://app.wasenderapi.com/api-docs/webhooks/webhook-setup/), and [message received event](https://app.wasenderapi.com/api-docs/webhooks/webhook-message-received).

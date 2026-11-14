@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+import json
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 
@@ -232,6 +233,35 @@ class ConnectifyRepository:
             await asyncio.to_thread(client.from_("app_users").update({"profile": profile}).eq("id", user["id"]).execute)
         return user
 
+    async def update_usage_memory(self, user: Dict[str, Any], *, details=None, booking=None, enabled=None, forget=False):
+        from app.whatsapp.user_memory import clean_memory, record_usage
+
+        client = self.client
+        # Retry an optimistic JSONB compare-and-swap so another profile edit is
+        # preserved instead of being overwritten by a stale profile snapshot.
+        for _ in range(3):
+            if client:
+                response = await asyncio.to_thread(client.from_("app_users").select("id,profile").eq("id", user["id"]).single().execute)
+                raw_profile = (response.data or {}).get("profile")
+            else:
+                raw_profile = user.get("profile")
+            profile = dict(raw_profile or {})
+            memory = clean_memory({"enabled": False} if forget else profile.get("assistantMemory"))
+            if enabled is not None:
+                memory["enabled"] = bool(enabled)
+            if details is not None:
+                memory = record_usage(memory, details, booking)
+            updated_profile = {**profile, "assistantMemory": memory}
+            if client:
+                query = client.from_("app_users").update({"profile": updated_profile}).eq("id", user["id"])
+                query = query.is_("profile", "null") if raw_profile is None else query.filter("profile", "eq", json.dumps(raw_profile))
+                result = await asyncio.to_thread(query.execute)
+                if not result.data:
+                    continue
+            user["profile"] = updated_profile
+            return memory
+        raise RuntimeError("Profile changed concurrently; memory update was not saved")
+
     async def get_categories(self, limit: int = 10) -> List[Dict[str, Any]]:
         client = self.client
         if not client:
@@ -419,7 +449,7 @@ class ConnectifyRepository:
 
         response = (
             await asyncio.to_thread(client.from_("bookings")
-            .select("*, provider:provider_id(name, phone), service:service_id(name)")
+            .select("*, provider:provider_id(name, phone), service:service_id(name, category)")
             .eq("customer_id", customer_id)
             .order("created_at", desc=True)
             .limit(limit)

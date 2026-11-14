@@ -32,12 +32,24 @@ def role_selection(name: str = "") -> Dict[str, Any]:
     }
 
 
-def customer_main_menu(first_name: str = "") -> Dict[str, Any]:
+def customer_main_menu(first_name: str = "", previous=None) -> Dict[str, Any]:
+    if previous and previous.get("service") and previous.get("location"):
+        return {
+            "text": (f"Welcome back, *{first_name}*!\n\n"
+                     f"Last time you looked for *{previous['service']}* in *{previous['location']}*. "
+                     "Need that again, or something different?\n\n"
+                     "Type *memory* to see or change your saved preferences."),
+            "buttons": [
+                {"id": "MEMORY_REUSE", "title": "Use last request"},
+                {"id": "CMD_FIND_SERVICE", "title": "Something different"},
+                {"id": "CMD_MY_BOOKINGS", "title": "My bookings"},
+            ],
+        }
     return {
         "text": (
             f"Hello {first_name}! How can Connectify help you today?\n\n"
             'Tell me what you need, for example: "A painter in Lugbe, Abuja next Friday."\n'
-            "You can also use the options below."
+            "You can also use the options below. Type *memory* to see your saved preferences."
         ),
         "buttons": [
             {"id": "CMD_FIND_SERVICE", "title": "🔍 Find a Service"},

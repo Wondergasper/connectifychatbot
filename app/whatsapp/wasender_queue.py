@@ -155,6 +155,9 @@ class WasenderQueue:
                           "hi", "hello", "hey", "help", "start", "wallet", "balance",
                           "bookings", "jobs", "requests", "find a service", "find service",
                           "services", "categories", "browse services", "trades", "resume", "continue", "main menu"}
+            navigation.update({"memory", "my preferences", "what do you remember", "what do you remember about me",
+                               "what do you remember about me?", "memory on", "memory off", "forget my preferences",
+                               "same as last time", "same again", "use my last request", "book again"})
             if choices and text.lower() not in navigation:
                 choice = next((item for item in choices if str(item.get("title", "")).lower() == text.lower()), None)
                 if not choice and text.isascii() and text.isdigit() and len(text) <= 2 and 1 <= int(text) <= len(choices):

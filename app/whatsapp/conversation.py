@@ -7,6 +7,7 @@ from app.whatsapp.service import whatsapp_service
 from app.whatsapp import messages
 from app.whatsapp import ai_service
 from app.whatsapp.memory import reply_capture, history_tail
+from app.whatsapp.user_memory import get_memory, prompt_memory, reusable_request, describe_memory
 from app.whatsapp.booking_details import BOOKING_STEPS, has_draft, location_label, schedule_updates, schedule_problem, needs_interpretation, is_question
 from app.repositories.connectify_repository import ConnectifyRepository
 
@@ -118,6 +119,36 @@ class ConversationManager:
                 return await whatsapp_service.send_message(
                     phone_number, "Your account is currently restricted. Please contact support."
                 )
+
+            memory = get_memory(user)
+            if (is_greeting or action_id == "MEMORY_REUSE" or lower in {"memory", "my preferences", "what do you remember", "what do you remember about me", "what do you remember about me?", "same as last time", "same again", "use my last request", "book again"}) and get_user_name(user):
+                memory = await self.hydrate_usage_memory(user)
+            await session_manager.update_session(phone_number, {"usageMemory": prompt_memory(memory)})
+            if lower in {"memory", "my preferences", "what do you remember", "what do you remember about me", "what do you remember about me?"}:
+                return await whatsapp_service.send_message(phone_number, describe_memory(user))
+            if lower in {"memory on", "memory off", "forget my preferences"}:
+                try:
+                    changed = await self.repository.update_usage_memory(
+                        user, enabled=(lower == "memory on"), forget=(lower == "forget my preferences"),
+                    )
+                    await session_manager.update_session(phone_number, {"usageMemory": prompt_memory(changed)})
+                except Exception:
+                    logger.warning("Could not update usage-memory preferences")
+                    return await whatsapp_service.send_message(phone_number, "I couldn't update your saved preferences right now. Please try again.")
+                if lower == "forget my preferences":
+                    return await whatsapp_service.send_message(phone_number, "I've cleared your saved service and location preferences and turned personalization off. Your account and booking records are unchanged. Say *memory on* to enable it again.")
+                return await whatsapp_service.send_message(phone_number, "Personalized memory is on. I'll remember confirmed service requests for future visits." if changed["enabled"] else "Personalized memory is off. I won't use or update saved service preferences. Say *forget my preferences* if you'd like to delete them too.")
+            if action_id == "MEMORY_REUSE" or lower in {"same as last time", "same again", "use my last request", "book again"}:
+                previous = reusable_request(memory)
+                if not previous or not previous.get("service") or not previous.get("location"):
+                    return await whatsapp_service.send_message(phone_number, "I don't have a saved service request to reuse. What service and area do you need?")
+                restored = await session_manager.update_session(phone_number, {
+                    "service": previous["service"], "location": previous["location"], "date": None, "time": None,
+                    "timePeriod": None, "budget": None, "urgency": "normal", "matchedProviders": [],
+                    "isConfirmed": False, "step": "AWAITING_DATETIME", "wasenderChoices": [],
+                    "pendingLocation": None, "editingService": False,
+                })
+                return await self.advance_booking(phone_number, restored)
 
             # Global Reset Command
             if lower in ["cancel", "exit", "restart", "reset"]:
@@ -262,7 +293,7 @@ class ConversationManager:
             session = await session_manager.get_session(phone_number)
             has_name = bool(get_user_name(user))
             user_profile = user.get("profile") or {}
-            is_onboarded = bool(user_profile.get("onboarded", False) and has_name)
+            is_onboarded = bool((user_profile.get("onboarded", False) or memory.get("lastBooking")) and has_name)
 
             if session.get("step") == "PROVIDER_SELECTION" and not is_question(trimmed) and re.search(r"\b(first|second|third|(?:number|option|provider)\s*[1-3])\b", lower):
                 return await self.handle_provider_selection(phone_number, trimmed, user, session)
@@ -292,7 +323,7 @@ class ConversationManager:
                 if session.get("step") == "AWAITING_DATETIME":
                     return await self.handle_date_time_capture(phone_number, trimmed, session)
                 if session.get("step") == "AWAITING_CONFIRMATION":
-                    return await self.handle_confirmation_response(phone_number, trimmed, session, action_id)
+                    return await self.handle_confirmation_response(phone_number, trimmed, session, action_id, user)
                 if session.get("step") == "EDIT_BOOKING":
                     field_actions = {"service": "EDIT_SERVICE", "location": "EDIT_LOCATION", "date": "EDIT_DATE", "time": "EDIT_TIME"}
                     if lower in field_actions:
@@ -409,7 +440,7 @@ class ConversationManager:
 
             # Awaiting Confirmation Step
             if session.get("step") == "AWAITING_CONFIRMATION":
-                return await self.handle_confirmation_response(phone_number, trimmed, session, action_id)
+                return await self.handle_confirmation_response(phone_number, trimmed, session, action_id, user)
 
             # Awaiting Date/Time Step
             if session.get("step") == "AWAITING_DATETIME":
@@ -537,7 +568,7 @@ class ConversationManager:
                 phone_number, menu["text"], menu["buttons"]
             )
 
-        menu = messages.customer_main_menu(first_name)
+        menu = messages.customer_main_menu(first_name, reusable_request(get_memory(user)))
         return await whatsapp_service.send_interactive_buttons(
             phone_number, menu["text"], menu["buttons"]
         )
@@ -685,12 +716,44 @@ class ConversationManager:
     async def handle_service_search(self, phone_number: str, message: str, session: Dict[str, Any]) -> Dict[str, Any]:
         return await self.handle_natural_message(phone_number, message, session)
 
+    async def hydrate_usage_memory(self, user):
+        memory = get_memory(user)
+        if not memory["enabled"] or memory.get("lastRequest") or user.get("role") != "customer":
+            return memory
+        try:
+            for booking in await self.repository.get_customer_bookings(user["id"], limit=5):
+                if booking.get("status") in {"cancelled", "failed"}:
+                    continue
+                service = booking.get("service") or {}
+                address = booking.get("address") or {}
+                if not isinstance(service, dict) or not isinstance(address, dict):
+                    continue
+                details = {"service": service.get("category") or service.get("name"),
+                           "location": address.get("whatsapp_location"), "time": booking.get("start_time")}
+                if details["service"] and details["location"]:
+                    return await self.repository.update_usage_memory(user, details=details, booking=booking)
+        except Exception:
+            logger.warning("Could not load older booking preferences")
+        return memory
+
+    async def remember_usage(self, phone_number, session, user=None, booking=None):
+        try:
+            user = user or await self.repository.find_or_create_whatsapp_user(phone_number)
+            if not get_memory(user)["enabled"]:
+                return
+            memory = await self.repository.update_usage_memory(user, details=session, booking=booking)
+            await session_manager.update_session(phone_number, {"usageMemory": prompt_memory(memory)})
+        except Exception:
+            # A preference write must not prevent a booking or provider search.
+            logger.warning("Could not save usage memory; booking flow continues")
+
     async def handle_confirmation_response(
         self,
         phone_number: str,
         message: str,
         session: Dict[str, Any],
         action_id: Optional[str] = None,
+        user: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         text = message.lower().strip()
         if text in CONFIRMATIONS or action_id == "CONFIRM_YES":
@@ -703,7 +766,7 @@ class ConversationManager:
                 await session_manager.update_session(phone_number, {"step": "AWAITING_DATETIME"})
                 return await whatsapp_service.send_message(phone_number, problem)
 
-            return await self.find_and_present_providers(phone_number, session)
+            return await self.find_and_present_providers(phone_number, session, user)
 
         if text in {"no", "change details", "edit"}:
             menu = messages.edit_booking_menu()
@@ -723,8 +786,9 @@ class ConversationManager:
         return await self.advance_booking(phone_number, updated)
 
     async def find_and_present_providers(
-        self, phone_number: str, session: Dict[str, Any]
+        self, phone_number: str, session: Dict[str, Any], user=None
     ) -> Dict[str, Any]:
+        await self.remember_usage(phone_number, session, user=user)
         providers = await self.repository.find_matching_services(
             service=session.get("service"),
             location=session.get("location"),
@@ -781,6 +845,8 @@ class ConversationManager:
                 provider=selected_provider,
                 session=session,
             )
+
+            await self.remember_usage(phone_number, session, user=user, booking=booking)
 
             await session_manager.clear_session(phone_number)
 

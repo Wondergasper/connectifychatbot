@@ -173,7 +173,7 @@ def normalize_time(value: Any, *, allow_bare_hour: bool = True) -> Optional[str]
 
 def build_prompt(message: str, session: Dict[str, Any]) -> str:
     context = {key: session.get(key) for key in (
-        "step", "service", "location", "date", "time", "timePeriod", "budget", "urgency", "role", "history",
+        "step", "service", "location", "date", "time", "timePeriod", "budget", "urgency", "role", "history", "usageMemory",
     ) if session.get(key) is not None}
     context["history"] = (context.get("history") or [])[-12:]
     if session.get("matchedProviders"):
@@ -189,6 +189,10 @@ multiple details in one message, 'same place', 'same time', and references to re
 Keep replies under 60 words. Ask ONE relevant question at a time. Avoid repeated greetings,
 long menus, sales language, unsupported guarantees, invented prices, and excessive emoji.
 Use the saved booking and recent messages. Never ask for already-known details.
+usageMemory is this user's historical service/location preferences and booking requests, not a current booking.
+Use it to understand 'same as last time' and offer relevant choices. Never assume the user wants the same
+service or place; ask or follow their explicit request. Never copy an old appointment date/time to a new request.
+Booking requests in memory are not proof of completed work or successful payments.
 For booking changes return ONLY the fields the user explicitly supplied or changed.
 'Same place' preserves location. 'Friday afternoon' changes date and sets timePeriod=afternoon;
 it must NOT invent an exact hour. Set clearFields=['time'] for a broad period replacing an exact time.
