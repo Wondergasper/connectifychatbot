@@ -79,7 +79,7 @@ def no_providers(service: Optional[str] = None, location: Optional[str] = None) 
     loc = location or "that area"
     return (
         f"Sorry, I could not find available {svc} providers near {loc} right now.\n\n"
-        'Try a nearby area (e.g. "Ikeja", "Yaba", "Lekki"), or type *cancel* to start over.'
+        'Reply with another area and city to keep searching for this service, or type *cancel* to start over.'
     )
 
 
@@ -109,7 +109,7 @@ def confirm_summary(session: Dict[str, Any]) -> str:
         "📝 *Please confirm your booking request:*\n",
         f"*Service:* {session.get('service')}",
         f"*Location:* {session.get('location')}",
-        f"*Date:* {session.get('date') or 'As soon as possible'}",
+        f"*Date:* {session.get('date') or 'Not set yet'}",
     ]
     if session.get("time"):
         lines.append(f"*Time:* {session.get('time')}")
@@ -117,18 +117,36 @@ def confirm_summary(session: Dict[str, Any]) -> str:
         lines.append(f"*Budget:* ₦{session.get('budget')}")
     if session.get("urgency") == "emergency":
         lines.append("🚨 *Urgent Request*")
-    lines.append("\nIs this correct? Reply *YES* to find providers or *NO* to restart.")
+    lines.append("\nIs this correct? Reply *YES* to find providers or *change details* to edit.")
     return "\n".join(lines)
 
 
-def ask_date_time() -> str:
-    return (
-        "Which date and time works best for you?\n\n"
-        "Examples:\n"
-        '• "today 5pm"\n'
-        '• "tomorrow 10:30am"\n'
-        '• "2026-10-20 09:00"'
-    )
+def ask_date_time(session=None) -> str:
+    session = session or {}
+    details = ""
+    if session.get("service"):
+        details = f"For *{session['service']}*"
+        if session.get("location"):
+            details += f" in *{session['location']}*"
+        details += ":\n\n"
+    if session.get("time") and not session.get("date"):
+        return details + f"Time saved: *{session['time']}*. Which date would you like? For example, *18 November*, *the 18th*, or *tomorrow*."
+    if session.get("date") and not session.get("time"):
+        return details + f"Date saved: *{session['date']}*. What time would you like? For example, *10am* or *14:30*."
+    return details + 'Which date and time would you like? For example, *18 November at 10am* or *tomorrow 3pm*.'
+
+
+def edit_booking_menu():
+    return {
+        "text": "Which booking detail would you like to change? Your other details will be kept.",
+        "buttonLabel": "Change details",
+        "sections": [{"title": "Booking details", "rows": [
+            {"id": "EDIT_SERVICE", "title": "Service"},
+            {"id": "EDIT_LOCATION", "title": "Location"},
+            {"id": "EDIT_DATE", "title": "Date"},
+            {"id": "EDIT_TIME", "title": "Time"},
+        ]}],
+    }
 
 
 def booking_created(provider: Dict[str, Any], booking: Dict[str, Any]) -> str:
@@ -277,8 +295,8 @@ def customer_location_prompt(name: str) -> str:
     first_name = name.split(" ")[0] if name else "Friend"
     return (
         f"Nice to meet you, *{first_name}*! 👋\n\n"
-        "📍 Which neighborhood or area in Lagos do you stay?\n"
-        "• Reply with your area (e.g. *Ikeja*, *Surulere*, *Lekki*, *Yaba*)\n"
+        "📍 Which area and city do you live in?\n"
+        "• For example, *Ikeja, Lagos* or *Lugbe, Abuja*\n"
         "• Or tap the 📍 button on WhatsApp to send your location pin."
     )
 
@@ -302,8 +320,8 @@ def customer_onboarding_completed(first_name: str, location: str) -> Dict[str, A
 def provider_location_prompt(category: str) -> str:
     return (
         f"🛠️ Excellent! You selected *{category}*.\n\n"
-        "📍 What area(s) do you operate from or cover in Lagos?\n"
-        "• Reply with your area (e.g. *Surulere & Yaba*, *Ikeja*, *Lekki*)\n"
+        "📍 Which area(s) and city do you cover?\n"
+        "• For example, *Surulere, Lagos* or *Lugbe, Abuja*\n"
         "• Or send your current workshop / shop location pin 📍"
     )
 
@@ -311,8 +329,8 @@ def provider_location_prompt(category: str) -> str:
 def location_prompt_for_category(category: str) -> str:
     return (
         f"Great choice! You selected *{category}*.\n\n"
-        "📍 Where in Lagos do you need this service?\n"
-        "• Reply with your area (e.g. *Ikeja*, *Surulere*, *Lekki*, *Yaba*)\n"
+        "📍 Which area and city do you need this service in?\n"
+        "• For example, *Ikeja, Lagos* or *Lugbe, Abuja*\n"
         "• Or tap the 📍 button to share your current location pin."
     )
 

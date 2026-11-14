@@ -25,8 +25,12 @@ def _no_redis(monkeypatch):
     import app.whatsapp.session as session_mod
     monkeypatch.setattr(session_mod, "get_redis_client", _none)
     session_mod._memory_store.clear()
+    session_mod._memory_expires.clear()
+    session_mod._dirty_sessions.clear()
     yield
     session_mod._memory_store.clear()
+    session_mod._memory_expires.clear()
+    session_mod._dirty_sessions.clear()
 
 
 class MockSupabaseClient:

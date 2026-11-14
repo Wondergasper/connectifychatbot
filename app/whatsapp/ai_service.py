@@ -1,7 +1,8 @@
 import re
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import calendar
 from typing import Dict, Any, Optional, Set, Tuple
 
 import httpx
@@ -41,36 +42,70 @@ def to_text(value: Any, max_length: int = 120) -> Optional[str]:
     return None
 
 
-def normalize_date(value: Any) -> Optional[str]:
-    """
-    Normalize a free-form date value into an ISO date string (YYYY-MM-DD).
-    Accepts 'today', 'tomorrow', 'YYYY-MM-DD', 'DD-MM-YYYY', or compound phrases like 'tomorrow 10am'.
-    """
+def nigeria_now() -> datetime:
+    return datetime.now(timezone(timedelta(hours=1)))
+
+
+def normalize_date(value: Any, *, allow_day_only: bool = False, reference=None) -> Optional[str]:
+    """Parse calendar dates deterministically; yearless dates use the next occurrence."""
     if not value:
         return None
     raw = str(value).strip().lower()
     if not raw:
         return None
 
-    now = datetime.now()
+    now = reference or nigeria_now()
     if re.search(r"\btomorrow\b", raw):
         return (now + timedelta(days=1)).strftime("%Y-%m-%d")
     if re.search(r"\btoday\b", raw):
         return now.strftime("%Y-%m-%d")
 
-    # ISO YYYY-MM-DD
-    iso_match = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", raw)
+    def valid(year, month, day):
+        try:
+            return datetime(year, month, day).date().isoformat()
+        except ValueError:
+            return None
+
+    # Explicit dates must pass real calendar validation (including leap years).
+    iso_match = re.search(r"\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b", raw)
     if iso_match:
         y, m, d = map(int, iso_match.groups())
-        if 1 <= m <= 12 and 1 <= d <= 31:
-            return f"{y:04d}-{m:02d}-{d:02d}"
+        return valid(y, m, d)
 
     # DD-MM-YYYY
-    dmy_match = re.search(r"\b(\d{2})-(\d{2})-(\d{4})\b", raw)
+    dmy_match = re.search(r"\b(\d{1,2})[-/](\d{1,2})[-/](\d{4})\b", raw)
     if dmy_match:
         d, m, y = map(int, dmy_match.groups())
-        if 1 <= m <= 12 and 1 <= d <= 31:
-            return f"{y:04d}-{m:02d}-{d:02d}"
+        return valid(y, m, d)
+
+    months = {name.lower(): i for i in range(1, 13)
+              for name in (calendar.month_name[i], calendar.month_abbr[i])}
+    months["sept"] = 9
+    month_pattern = "(?:" + "|".join(sorted(months, key=len, reverse=True)) + ")"
+    named = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(" + month_pattern + r")\b(?:\s*,?\s*(\d{4})\b)?", raw)
+    reverse = re.search(r"\b(" + month_pattern + r")\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:\s*,?\s*(\d{4})\b)?", raw)
+    if named or reverse:
+        match = named or reverse
+        day = int(match[1] if named else match[2])
+        month = months[match[2] if named else match[1]]
+        explicit_year = match[3]
+        year = int(explicit_year) if explicit_year else now.year
+        parsed = valid(year, month, day)
+        if not explicit_year and parsed and parsed < now.date().isoformat():
+            parsed = valid(year + 1, month, day)
+        return parsed
+
+    # Bare day numbers are dates ONLY when the conversation is asking for a date.
+    day_match = re.fullmatch(r"(?:on\s+)?(?:the\s+)?(\d{1,2})(st|nd|rd|th)?", raw)
+    if day_match and (allow_day_only or day_match[2]):
+        day = int(day_match[1])
+        for offset in range(13):
+            month_index = now.year * 12 + now.month - 1 + offset
+            year, month0 = divmod(month_index, 12)
+            parsed = valid(year, month0 + 1, day)
+            if parsed and parsed >= now.date().isoformat():
+                return parsed
+        return None
 
     # Try standard date parsing
     for fmt in ("%Y/%m/%d", "%d/%m/%Y", "%B %d, %Y", "%b %d, %Y"):
@@ -83,7 +118,7 @@ def normalize_date(value: Any) -> Optional[str]:
     return None
 
 
-def normalize_time(value: Any) -> Optional[str]:
+def normalize_time(value: Any, *, allow_bare_hour: bool = True) -> Optional[str]:
     """
     Normalize user time into 24-hour HH:MM format.
     Accepts '14:30', '9', '2pm', '2:30 pm', or compound phrases like 'tomorrow 10am'.
@@ -116,7 +151,7 @@ def normalize_time(value: Any) -> Optional[str]:
 
     # Lone hour like "14" or "9"
     lone = re.match(r"^(\d{1,2})$", raw)
-    if lone:
+    if lone and allow_bare_hour:
         h = int(lone.group(1))
         if 0 <= h <= 24:
             if h == 24:
@@ -127,7 +162,7 @@ def normalize_time(value: Any) -> Optional[str]:
 
 
 def build_prompt(message: str, session: Dict[str, Any]) -> str:
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    today_str = nigeria_now().strftime("%Y-%m-%d")
     return f"""
 You are Connectify, a warm, helpful, and knowledgeable AI assistant on WhatsApp helping Nigerians find and book trusted local service providers (plumbers, electricians, AC techs, generator mechanics, cleaners, carpenters, painters).
 
@@ -384,13 +419,13 @@ def extract_intent_heuristically(message: str, session: Dict[str, Any]) -> Dict[
         "ikeja city mall", "ikeja", "surulere", "yaba", "lekki phase 1", "lekki",
         "victoria island", "vi", "ikoyi", "maryland", "gbagada", "magodo", "festac",
         "ajah", "ogba", "agege", "alaba", "oshodi", "satellite town", "isolo", "mushin",
-        "berger", "ojota", "anthony", "somolu", "ilupeju", "ebute metta", "abuja", "ibadan",
+        "berger", "ojota", "anthony", "somolu", "ilupeju", "ebute metta", "lugbe, abuja", "lugbe abuja", "lugbe", "abuja", "ibadan",
         "port harcourt", "enugu"
     ]
     for loc in locations:
         pattern = r"\b" + re.escape(loc) + r"\b"
         if re.search(pattern, lower):
-            extracted["location"] = loc.title()
+            extracted["location"] = "Lugbe, Abuja" if loc.startswith("lugbe") else loc.title()
             break
 
     # 6. Date & Time
@@ -422,7 +457,7 @@ def extract_intent_heuristically(message: str, session: Dict[str, Any]) -> Dict[
     elif effective_service:
         reply = (
             f"Great, you need *{effective_service}*! 🛠️\n\n"
-            "Where in Lagos are you located? (e.g. *Ikeja*, *Surulere*, *Lekki* or tap the 📍 button to share your location)"
+            "Which area and city do you need the service in? (e.g. *Ikeja, Lagos* or *Lugbe, Abuja*, or share a location pin)"
         )
         suggestions = ["Ikeja", "Lekki", "Surulere"]
     elif effective_location:
@@ -454,7 +489,7 @@ async def analyze_intent(message: str, session: Dict[str, Any]) -> Dict[str, Any
     """
     calls_so_far = int(session.get("aiCalls") or 0)
     if calls_so_far >= MAX_SESSION_AI_CALLS:
-        return {"replyText": None, "sessionUpdates": {}, "suggestions": [], "rateLimited": True}
+        return extract_intent_heuristically(str(message or "")[:MAX_USER_MESSAGE_LENGTH], session)
 
     truncated = str(message or "")[:MAX_USER_MESSAGE_LENGTH]
 

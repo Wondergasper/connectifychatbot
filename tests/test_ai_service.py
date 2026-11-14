@@ -72,7 +72,7 @@ def test_extract_intent_heuristically():
     res2 = extract_intent_heuristically("generator repair", {})
     assert res2["sessionUpdates"]["service"] == "Generator Repair"
     assert res2["sessionUpdates"]["isConfirmed"] is False
-    assert "Where in Lagos" in res2["replyText"]
+    assert "area and city" in res2["replyText"]
     assert "trouble understanding" not in res2["replyText"]
 
     # Case 3: Empty / generic search query

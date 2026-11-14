@@ -224,6 +224,14 @@ class ConnectifyRepository:
             "formatted": format_price(balance),
         }
 
+    async def mark_onboarded(self, user: Dict[str, Any]) -> Dict[str, Any]:
+        profile = {**(user.get("profile") or {}), "onboarded": True}
+        user["profile"] = profile
+        client = self.client
+        if client:
+            await asyncio.to_thread(client.from_("app_users").update({"profile": profile}).eq("id", user["id"]).execute)
+        return user
+
     async def get_categories(self, limit: int = 10) -> List[Dict[str, Any]]:
         client = self.client
         if not client:
@@ -275,9 +283,13 @@ class ConnectifyRepository:
             query = query.or_(f"name.ilike.{quoted_term},category.ilike.{quoted_term},description.ilike.{quoted_term}")
 
         if location:
-            escaped_loc = str(location).replace("%", "\\%").replace("_", "\\_")
-            quoted_loc = quote_postgrest_value(f"%{escaped_loc}%")
-            query = query.or_(f"location->>address.ilike.{quoted_loc},location->>city.ilike.{quoted_loc}")
+            # Match area and city separately: punctuation in "Lugbe, Abuja"
+            # must not exclude a service whose address is "Lugbe Abuja".
+            parts = [part.strip() for part in str(location).split(",") if part.strip()]
+            for term in parts[-2:]:
+                escaped_loc = term.replace("%", "\\%").replace("_", "\\_")
+                quoted_loc = quote_postgrest_value(f"%{escaped_loc}%")
+                query = query.or_(f"location->>address.ilike.{quoted_loc},location->>city.ilike.{quoted_loc}")
 
         response = (
             await asyncio.to_thread(query.order("rating_average", desc=True, nullsfirst=False)

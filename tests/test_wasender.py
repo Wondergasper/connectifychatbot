@@ -361,3 +361,45 @@ async def test_startup_shortens_legacy_fifteen_minute_leases():
         db.execute("UPDATE jobs SET available=?", (time.time() + 900,))
     wasender_queue._initialize()
     assert queue_rows()[0]["available"] <= time.time() + 60
+
+
+@pytest.mark.asyncio
+async def test_stale_menu_does_not_intercept_date_reply(monkeypatch):
+    handler = AsyncMock()
+    monkeypatch.setattr(conversation_manager, "handle_incoming_message", handler)
+    await session_manager.update_session("2348001234567", {
+        "step": "AWAITING_DATETIME", "service": "Painting", "time": "10:00",
+        "wasenderChoices": [{"id": "WRONG_MENU", "title": "Other"}],
+    })
+    await post_webhook(webhook_payload("18th"))
+    await wasender_queue.process_one("in")
+    handler.assert_awaited_once_with("2348001234567", {"type": "text", "text": "18th"})
+    assert not (await session_manager.get_session("2348001234567"))["wasenderChoices"]
+
+
+@pytest.mark.asyncio
+async def test_yes_and_choice_titles_work_without_numbers(monkeypatch):
+    handler = AsyncMock()
+    monkeypatch.setattr(conversation_manager, "handle_incoming_message", handler)
+    await session_manager.update_session("2348001234567", {
+        "step": "AWAITING_CONFIRMATION", "wasenderChoices": [{"id": "CONFIRM_YES", "title": "Confirm & find pros"}],
+    })
+    await post_webhook(webhook_payload("yes"))
+    await wasender_queue.process_one("in")
+    assert handler.await_args.args[1]["actionId"] == "CONFIRM_YES"
+    await session_manager.update_session("2348001234567", {
+        "step": "CATEGORY_SELECTION", "wasenderChoices": [{"id": "CATEGORY_PAINTING", "title": "Painting"}],
+    })
+    await post_webhook(webhook_payload("Painting", "title-reply"))
+    await wasender_queue.process_one("in")
+    assert handler.await_args.args[1]["actionId"] == "CATEGORY_PAINTING"
+
+
+@pytest.mark.asyncio
+async def test_late_outgoing_menu_cannot_activate_in_a_later_booking_step(monkeypatch):
+    mock_provider(monkeypatch, lambda request: httpx.Response(200, json={"success": True}))
+    await session_manager.update_session("2348001234567", {"step": "CATEGORY_SELECTION"})
+    await wasender_queue.enqueue_outgoing("2348001234567", "Select a category", choices=[{"id": "CATEGORY_PAINTING"}])
+    await session_manager.update_session("2348001234567", {"step": "AWAITING_DATETIME"})
+    await wasender_queue.process_one("out")
+    assert not (await session_manager.get_session("2348001234567")).get("wasenderChoices")

@@ -48,4 +48,12 @@ After reconnecting, send a message yourself to the linked account from another n
 - Wasender trial accounts permit only one outgoing message per minute. Paid account protection permits one every five seconds. Keep the interval appropriate to the account.
 - Render Free services spin down after 15 minutes without inbound traffic and take about a minute to wake. They also lose local SQLite files on restart/spin-down. Use an always-on instance with a persistent disk for this deployment's queue. See [Render Free service limitations](https://render.com/docs/free) and [Wasender rate limits](https://www.wasenderapi.com/api-docs/rate-limits/understanding-rate-limits).
 
+## Booking conversations
+
+Booking details are collected deterministically without requiring Gemini. Dates such as `18 November`, `November 18`, `18th`, and `the 18th` are accepted. A bare `18` is treated as a day when the date is missing and a time is already saved, so it cannot overwrite `10am` with `18:00`. Yearless dates use the next occurrence; the full ISO date is shown for confirmation. Dates use Nigeria time and past bookings are rejected.
+
+The bot asks only for missing details, confirms the complete request before searching, and keeps the rest of the draft when the user selects `Change details`. Location prompts accept area/city across Nigeria; actual provider coverage comes from the service search. `Lubge Abuja` requires confirmation before using the suggested `Lugbe, Abuja`. A failed provider search keeps the service and schedule while asking for another location.
+
+Use `hi`, `resume`, or `continue` to resume an unfinished booking, including after visiting the main menu. Redis sessions retain drafts for 24 hours. A temporary Redis outage uses a local copy and synchronizes it back on recovery. A restart during an outage still requires working persistent Redis to restore the draft. Stale numbered menus cannot intercept free-form date/location replies. Completed onboarding is saved so returning users are not asked for their name again.
+
 References: [Getting started](https://www.wasenderapi.com/api-docs/getting-started/getting-started-with-wasenderapi), [webhook setup](https://app.wasenderapi.com/api-docs/webhooks/webhook-setup/), and [message received event](https://app.wasenderapi.com/api-docs/webhooks/webhook-message-received).

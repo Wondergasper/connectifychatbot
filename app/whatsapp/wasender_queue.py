@@ -71,8 +71,9 @@ class WasenderQueue:
         if not phone.isascii() or not phone.isdigit() or not 7 <= len(phone) <= 15:
             raise ValueError("Wasender recipient must be an international phone number")
         job_id = "out:" + uuid.uuid4().hex
+        choices_step = (await session_manager.get_session(phone)).get("step") if choices is not None else None
         await asyncio.to_thread(self._insert, job_id, "out", {
-            "phone": phone, "text": text, "choices": choices,
+            "phone": phone, "text": text, "choices": choices, "choicesStep": choices_step,
         })
         return {"queued": True, "id": job_id}
 
@@ -140,14 +141,29 @@ class WasenderQueue:
         if incoming["type"] == "text":
             session = await session_manager.get_session(phone)
             choices = session.get("wasenderChoices") or []
+            if choices and session.get("wasenderChoicesStep") and session["wasenderChoicesStep"] != session.get("step"):
+                choices = []
+                await session_manager.update_session(phone, {"wasenderChoices": []})
             text = incoming["text"]
+            # Old quick-reply menus must never intercept a date or location.
+            if session.get("step") in {"AWAITING_LOCATION", "AWAITING_DATETIME"}:
+                if choices:
+                    await session_manager.update_session(phone, {"wasenderChoices": []})
+                await conversation_manager.handle_incoming_message(phone, incoming)
+                return
             navigation = {"cancel", "exit", "restart", "reset", "menu", "options", "home",
                           "hi", "hello", "hey", "help", "start", "wallet", "balance",
                           "bookings", "jobs", "requests", "find a service", "find service",
-                          "services", "categories", "browse services", "trades"}
+                          "services", "categories", "browse services", "trades", "resume", "continue", "main menu"}
             if choices and text.lower() not in navigation:
-                if text.isascii() and text.isdigit() and len(text) <= 2 and 1 <= int(text) <= len(choices):
+                choice = next((item for item in choices if str(item.get("title", "")).lower() == text.lower()), None)
+                if not choice and text.isascii() and text.isdigit() and len(text) <= 2 and 1 <= int(text) <= len(choices):
                     choice = choices[int(text) - 1]
+                if not choice and text.lower() in {"yes", "correct", "confirm"}:
+                    choice = next((item for item in choices if item.get("id") in {"CONFIRM_YES", "LOCATION_YES"}), None)
+                if not choice and text.lower() in {"no", "change details"}:
+                    choice = next((item for item in choices if item.get("id") in {"CMD_EDIT_BOOKING", "LOCATION_NO"}), None)
+                if choice:
                     incoming = {"type": "interactive", "text": choice.get("title", ""), "actionId": choice.get("id")}
                     await session_manager.update_session(phone, {"wasenderChoices": []})
                 else:
@@ -209,7 +225,11 @@ class WasenderQueue:
             raise RuntimeError("provider_unavailable")
         if response.is_success and data.get("success") is True:
             if payload.get("choices") is not None:
-                await session_manager.update_session(payload["phone"], {"wasenderChoices": payload["choices"]})
+                current = await session_manager.get_session(payload["phone"])
+                if payload.get("choicesStep") is None or payload["choicesStep"] == current.get("step"):
+                    await session_manager.update_session(payload["phone"], {
+                        "wasenderChoices": payload["choices"], "wasenderChoicesStep": payload.get("choicesStep"),
+                    })
             await asyncio.to_thread(self._finish, job["id"], "done")
             return
         await asyncio.to_thread(self._finish, job["id"], "failed", 0, f"rejected_http_{response.status_code}")
